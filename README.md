@@ -1,2 +1,4 @@
-# rokbollvpn
-Впн клиент , который поддерживает Minewire и VK-turn , которые поддерживается на ios, android , windows 
+# Впн клиент на непопулярных протоколах 
+Впн клиент , который поддерживает Minewire и VK-turn 
+Клиент поддерживает на ios , android и windows 
+
