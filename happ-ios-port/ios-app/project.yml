@@ -2,7 +2,7 @@ name: HappPort
 options:
   bundleIdPrefix: su.rokboll
   deploymentTarget:
-    iOS: "14.0"
+    iOS: "15.0"
   createIntermediateGroups: true
 
 settings:

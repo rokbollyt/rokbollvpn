@@ -27,10 +27,10 @@ export GOARCH=arm64
 export GOOS=ios
 export CGO_ENABLED=1
 export SDK_PATH="$SDK_PATH"
-export CC="$CLANG -isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=14.0"
-export CXX="${CLANG}++ -isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=14.0"
-export CGO_CFLAGS="-isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=14.0"
-export CGO_LDFLAGS="-isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=14.0"
+export CC="$CLANG -isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=15.0"
+export CXX="${CLANG}++ -isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=15.0"
+export CGO_CFLAGS="-isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=15.0"
+export CGO_LDFLAGS="-isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=15.0"
 
 echo "==> Building Go core for iOS (arm64)..."
 
