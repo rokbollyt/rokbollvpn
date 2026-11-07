@@ -4,12 +4,18 @@ set -e
 OUTPUT_DIR="ios-app/Lib"
 LIBRARY_NAME="librouter"
 
-XCODE_PATH="${XCODE_PATH:-/Applications/Xcode.app}"
-DEVELOPER_DIR="$XCODE_PATH/Contents/Developer"
-SDK_PATH="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
-CLANG="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
-
 mkdir -p "$OUTPUT_DIR"
+
+# Resolve SDK path dynamically via xcrun
+SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
+if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
+    SDK_PATH="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+fi
+
+CLANG="$(xcrun --sdk iphoneos --find clang 2>/dev/null || true)"
+if [ -z "$CLANG" ] || [ ! -f "$CLANG" ]; then
+    CLANG="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+fi
 
 if [ ! -d "$SDK_PATH" ]; then
     echo "SDK not found: $SDK_PATH"
@@ -42,4 +48,3 @@ go build \
 
 cd ..
 echo "Build complete: $OUTPUT_DIR/$LIBRARY_NAME.a and $OUTPUT_DIR/$LIBRARY_NAME.h"
-

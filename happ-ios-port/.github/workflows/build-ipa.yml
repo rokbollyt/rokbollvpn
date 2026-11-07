@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,4 +38,3 @@ jobs:
           name: HappPort-TrollStore-IPA
           path: happ-ios-port/HappPort-TrollStore.ipa
           retention-days: 14
-
