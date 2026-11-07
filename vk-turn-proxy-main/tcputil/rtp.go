@@ -5,7 +5,12 @@ import (
 	"net"
 	"sync/atomic"
 	"time"
+
+	"github.com/xtaci/kcp-go/v5"
 )
+
+// DefaultSecretKey is the default preshared key used for KCP AES block crypt.
+const DefaultSecretKey = "rokboll-turn-key-32bytes-secret!"
 
 // RTPPacketConn wraps a net.PacketConn to prepend a 12-byte standard WebRTC RTP header
 // on write and strip it on read.
@@ -56,4 +61,46 @@ func (r *RTPPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 		return 0, err
 	}
 	return len(b), nil
+}
+
+// NewKCPOverRTP creates a KCP session over an RTP-framed PacketConn.
+func NewKCPOverRTP(pc net.PacketConn, peer net.Addr, isServer bool, secretKey string) (*kcp.UDPSession, error) {
+	rtpConn := NewRTPPacketConn(pc)
+	block, err := kcp.NewAESBlockCrypt([]byte(secretKey))
+	if err != nil {
+		return nil, err
+	}
+
+	var sess *kcp.UDPSession
+	if isServer {
+		listener, err := kcp.ServeConn(block, 10, 3, rtpConn)
+		if err != nil {
+			return nil, err
+		}
+		sess, err = listener.AcceptKCP()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		sess, err = kcp.NewConn2(peer, block, 10, 3, rtpConn)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	mtu := envInt("KCP_MTU", 1000)
+	sndWnd := envInt("KCP_SNDWND", 512)
+	rcvWnd := envInt("KCP_RCVWND", 512)
+	interval := envInt("KCP_INTERVAL", 20)
+	resend := envInt("KCP_RESEND", 2)
+	nc := envInt("KCP_NC", 0)
+
+	sess.SetMtu(mtu)
+	sess.SetNoDelay(1, interval, resend, nc)
+	sess.SetWindowSize(sndWnd, rcvWnd)
+	sess.SetACKNoDelay(true)
+	_ = sess.SetReadBuffer(4 * 1024 * 1024)
+	_ = sess.SetWriteBuffer(4 * 1024 * 1024)
+
+	return sess, nil
 }
