@@ -1,0 +1,91 @@
+name: HappPort
+options:
+  bundleIdPrefix: su.rokboll
+  deploymentTarget:
+    iOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  HappPort:
+    type: application
+    platform: iOS
+    sources:
+      - path: HappPort
+      - path: Lib
+        buildPhase: none
+    dependencies:
+      - framework: Lib/librouter.a
+        embed: false
+      - target: HappPortTunnel
+    info:
+      path: HappPort/Info.plist
+    entitlements:
+      path: HappPort/HappPort.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: su.rokboll.happport
+        PRODUCT_NAME: HappPort
+        INFOPLIST_KEY_CFBundleDisplayName: Happ
+        SWIFT_OBJC_BRIDGING_HEADER: HappPort/HappPort-Bridging-Header.h
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Lib"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/Lib"
+        OTHER_LDFLAGS:
+          - "-lresolv"
+          - "-framework"
+          - "CoreFoundation"
+          - "-framework"
+          - "Security"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+
+  HappPortTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: HappPortTunnel
+      - path: Lib
+        buildPhase: none
+    dependencies:
+      - framework: Lib/librouter.a
+        embed: false
+    info:
+      path: HappPortTunnel/Info.plist
+    entitlements:
+      path: HappPortTunnel/HappPortTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: su.rokboll.happport.tunnel
+        PRODUCT_NAME: HappPortTunnel
+        SWIFT_OBJC_BRIDGING_HEADER: HappPortTunnel/Tunnel-Bridging-Header.h
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Lib"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/Lib"
+        OTHER_LDFLAGS:
+          - "-lresolv"
+          - "-framework"
+          - "CoreFoundation"
+          - "-framework"
+          - "Security"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+

@@ -1,0 +1,9 @@
+*.zip  
+*.apk  
+*.hprof  
+/gradle-bin/  
+/build/  
+.gradle/  
+**/old/ 
+"node_modules/"  
+"**/node_modules/" 
