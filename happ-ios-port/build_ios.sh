@@ -6,26 +6,22 @@ LIBRARY_NAME="librouter"
 
 mkdir -p "$OUTPUT_DIR"
 
+echo "==> Resolving Go dependencies..."
+cd go-core
+go mod tidy
+cd ..
+
 # Resolve SDK path dynamically via xcrun
 SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
 if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
-    SDK_PATH="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+    DEVELOPER_DIR="$(xcode-select -p 2>/dev/null || echo '/Applications/Xcode.app/Contents/Developer')"
+    SDK_PATH="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
 fi
 
-CLANG="$(xcrun --sdk iphoneos --find clang 2>/dev/null || true)"
-if [ -z "$CLANG" ] || [ ! -f "$CLANG" ]; then
-    CLANG="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
-fi
+CLANG="$(xcrun --find clang 2>/dev/null || which clang || echo "clang")"
 
-if [ ! -d "$SDK_PATH" ]; then
-    echo "SDK not found: $SDK_PATH"
-    exit 1
-fi
-
-if [ ! -f "$CLANG" ]; then
-    echo "Compiler not found: $CLANG"
-    exit 1
-fi
+echo "==> Using SDK: $SDK_PATH"
+echo "==> Using Clang: $CLANG"
 
 export GOARCH=arm64
 export GOOS=ios
@@ -36,10 +32,11 @@ export CXX="${CLANG}++ -isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=14
 export CGO_CFLAGS="-isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=14.0"
 export CGO_LDFLAGS="-isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=14.0"
 
-echo "Building Go core for iOS (arm64)..."
+echo "==> Building Go core for iOS (arm64)..."
 
 cd go-core
 go build \
+    -v \
     -buildmode=c-archive \
     -ldflags="-w -s" \
     -trimpath \
