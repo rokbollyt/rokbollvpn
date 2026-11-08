@@ -43,6 +43,14 @@ import (
 
 // ---------- global state --------------------------------------------------
 
+var (
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	running bool
+	hystCmd *exec.Cmd
+	wgDev   *device.Device
+)
+
 // ---------- exported C API ------------------------------------------------
 
 //export RouterStart
