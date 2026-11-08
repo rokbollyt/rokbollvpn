@@ -1818,6 +1818,11 @@ type Config struct {
 	Debug         bool
 	ManualCaptcha      bool
 	OnTurnIPResolved func(ip string)
+
+	// TransformOutbound / TransformInbound allow protocol-level packet translation
+	// (e.g. WireGuard <-> AmneziaWG header and junk obfuscation) over UDP relay.
+	TransformOutbound func(pkt []byte) (junks [][]byte, out []byte)
+	TransformInbound  func(pkt []byte) []byte
 }
 
 // randIntn — обёртка над math/rand для использования из других файлов пакета.

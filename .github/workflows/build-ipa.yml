@@ -46,10 +46,12 @@ jobs:
         if: github.ref == 'refs/heads/main'
         with:
           tag_name: latest
-          name: "HappPort iOS TrollStore (Multi-Protocol AWG/WG/HY2/OVPN + MAX-TURN)"
+          name: "Happ Multi-Protocol (Android APK + iOS TrollStore IPA) AWG/WG/MAX-TURN"
           draft: false
           prerelease: false
-          files: happ-ios-port/HappPort-TrollStore.ipa
+          files: |
+            happ-ios-port/HappPort-TrollStore.ipa
+            android-release/Happ-MAX-Release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

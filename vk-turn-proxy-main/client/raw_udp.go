@@ -106,6 +106,19 @@ func RunRawUDPRelay(ctx context.Context, cfg Config) error {
 			activeClientAddr.Store(clientAddr)
 			pkt := make([]byte, n)
 			copy(pkt, buf[:n])
+			if cfg.TransformOutbound != nil {
+				junks, out := cfg.TransformOutbound(pkt)
+				for _, junk := range junks {
+					select {
+					case inboundChan <- junk:
+					default:
+					}
+				}
+				if len(out) == 0 {
+					continue
+				}
+				pkt = out
+			}
 			select {
 			case inboundChan <- pkt:
 			default:
@@ -253,7 +266,14 @@ func runOneRawUDPSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr,
 			if n > 0 {
 				client := activeClientAddr.Load()
 				if client != nil {
-					_, _ = listenConn.WriteTo(rxBuf[:n], client.(net.Addr))
+					pkt := rxBuf[:n]
+					if tp.cfg != nil && tp.cfg.TransformInbound != nil {
+						pkt = tp.cfg.TransformInbound(pkt)
+						if len(pkt) == 0 {
+							continue
+						}
+					}
+					_, _ = listenConn.WriteTo(pkt, client.(net.Addr))
 				}
 			}
 		}
