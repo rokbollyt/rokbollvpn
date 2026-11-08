@@ -48,8 +48,29 @@ public final class RokbollBridge {
     private static Process sTunnelProcess = null;
     private static String sCurrentKind = null;
 
+    public static Context getAppContext(Context context) {
+        if (context != null) return context;
+        try {
+            Class<?> happApp = Class.forName("su.happ.proxyutility.HappApplication");
+            Field f = happApp.getField("M0");
+            Object app = f.get(null);
+            if (app instanceof Context) return (Context) app;
+        } catch (Throwable ignored) {}
+        try {
+            Class<?> actThread = Class.forName("android.app.ActivityThread");
+            Method m = actThread.getMethod("currentApplication");
+            Object app = m.invoke(null);
+            if (app instanceof Context) return (Context) app;
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
     public static SharedPreferences getPrefs(Context context) {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        context = getAppContext(context);
+        if (context != null) {
+            return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        }
+        return null;
     }
 
     public static String getDeviceId(Context context) {
@@ -242,6 +263,11 @@ public final class RokbollBridge {
         return obj;
     }
 
+    private static final Pattern WG_URI_PATTERN = Pattern.compile(
+            "^(?:awg|wg|amnezia|wireguard)://(?:([^@]+)@)?([^/?#]+)(?:/)?(?:\\?([^#]*))?(?:#(.*))?$",
+            Pattern.CASE_INSENSITIVE
+    );
+
     /**
      * Intercepts import of custom URI keys (minewire://, max-turn://, vk-turn://, awg://, amnezia://, wg://, wireguard://, and INI text)
      * Returns true if handled, false otherwise.
@@ -261,7 +287,8 @@ public final class RokbollBridge {
                 boolean ok = parseAndSaveWireGuard(context, trimmed, true);
                 if (ok) {
                     importedCount++;
-                    lastRemarks = (trimmed.contains("Jc") || trimmed.contains("H1")) ? "AmneziaWG-Node" : "WireGuard-Node";
+                    boolean isAwg = trimmed.contains("Jc") || trimmed.contains("jc") || trimmed.contains("H1") || trimmed.contains("h1");
+                    lastRemarks = isAwg ? "AmneziaWG-Node" : "WireGuard-Node";
                 }
             } catch (Throwable t) {
                 Log.e(TAG, "Error importing INI config: " + t.getMessage(), t);
@@ -270,23 +297,25 @@ public final class RokbollBridge {
             String[] lines = trimmed.split("\\r?\\n");
             for (String line : lines) {
                 String uriStr = line.trim();
-                if (uriStr.startsWith("awg://") || uriStr.startsWith("amnezia://") || uriStr.startsWith("wg://") || uriStr.startsWith("wireguard://")) {
+                if (uriStr.isEmpty()) continue;
+                String lower = uriStr.toLowerCase();
+                if (lower.startsWith("awg://") || lower.startsWith("amnezia://") || lower.startsWith("wg://") || lower.startsWith("wireguard://")) {
                     try {
                         boolean ok = parseAndSaveWireGuard(context, uriStr, false);
                         if (ok) {
                             importedCount++;
                             String rem = extractRemarks(uriStr);
-                            lastRemarks = (rem != null && !rem.isEmpty()) ? rem : (uriStr.startsWith("awg://") || uriStr.startsWith("amnezia://") ? "AmneziaWG-Node" : "WireGuard-Node");
+                            lastRemarks = (rem != null && !rem.isEmpty()) ? rem : (lower.startsWith("awg://") || lower.startsWith("amnezia://") ? "AmneziaWG-Node" : "WireGuard-Node");
                         }
                     } catch (Throwable t) {
                         Log.e(TAG, "Error importing WG/AWG URI: " + uriStr, t);
                     }
-                } else if (uriStr.startsWith("minewire://") || uriStr.startsWith("max-turn://") || uriStr.startsWith("maxturn://") || uriStr.startsWith("vk-turn://") || uriStr.startsWith("vkturn://")) {
+                } else if (lower.startsWith("minewire://") || lower.startsWith("max-turn://") || lower.startsWith("maxturn://") || lower.startsWith("vk-turn://") || lower.startsWith("vkturn://")) {
                     try {
                         String remarks = extractRemarks(uriStr);
                         if (remarks == null || remarks.isEmpty()) {
-                            if (uriStr.startsWith("minewire://")) remarks = "Minewire";
-                            else if (uriStr.startsWith("max-turn://") || uriStr.startsWith("maxturn://")) remarks = "MAX-TURN";
+                            if (lower.startsWith("minewire://")) remarks = "Minewire";
+                            else if (lower.startsWith("max-turn://") || lower.startsWith("maxturn://")) remarks = "MAX-TURN";
                             else remarks = "VK-TURN";
                         }
 
@@ -304,12 +333,16 @@ public final class RokbollBridge {
 
         if (importedCount > 0) {
             final String msg = importedCount == 1 ? ("Сервер " + lastRemarks + " добавлен!") : ("Импортировано серверов: " + importedCount);
-            new Handler(Looper.getMainLooper()).post(new Runnable() {
-                @Override
-                public void run() {
-                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show();
-                }
-            });
+            if (context != null) {
+                new Handler(Looper.getMainLooper()).post(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            Toast.makeText(context.getApplicationContext(), msg, Toast.LENGTH_SHORT).show();
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            }
             return true;
         }
 
@@ -333,8 +366,27 @@ public final class RokbollBridge {
     private static String cleanBase64(String val) {
         if (val == null) return null;
         val = val.trim();
-        // Restore '+' if URL decoder converted it to space
+        try {
+            if (val.contains("%")) {
+                val = URLDecoder.decode(val, "UTF-8");
+            }
+        } catch (Throwable ignored) {}
         return val.replace(' ', '+');
+    }
+
+    private static Map<String, String> parseQueryParams(String query) {
+        Map<String, String> map = new HashMap<String, String>();
+        if (query == null || query.trim().isEmpty()) return map;
+        String[] pairs = query.split("&");
+        for (String p : pairs) {
+            int idx = p.indexOf('=');
+            if (idx > 0) {
+                String k = p.substring(0, idx).trim().toLowerCase();
+                String v = p.substring(idx + 1).trim();
+                map.put(k, v);
+            }
+        }
+        return map;
     }
 
     private static boolean parseAndSaveWireGuard(Context context, String text, boolean isIni) {
@@ -349,7 +401,7 @@ public final class RokbollBridge {
                 String mtuStr = getIniValue(text, "MTU");
                 int mtu = 1420;
                 if (mtuStr != null) {
-                    try { mtu = Integer.parseInt(mtuStr); } catch (Throwable ignored) {}
+                    try { mtu = Integer.parseInt(mtuStr.trim()); } catch (Throwable ignored) {}
                 }
 
                 if (privKey == null || pubKey == null || endpoint == null) {
@@ -382,59 +434,73 @@ public final class RokbollBridge {
                 String remarks = isAwg ? "AmneziaWG-Node" : "WireGuard-Node";
                 return saveWireGuardServer(context, remarks, privKey, address, pubKey, endpoint, psk, mtu, dns, awgParams);
             } else {
-                Uri uri = Uri.parse(text);
-                String scheme = uri.getScheme() != null ? uri.getScheme().toLowerCase() : "";
+                Matcher m = WG_URI_PATTERN.matcher(text.trim());
+                if (!m.matches()) {
+                    Log.e(TAG, "Regex did not match WireGuard/AWG URI: " + text);
+                    return false;
+                }
+
+                String scheme = text.substring(0, text.indexOf(":")).toLowerCase();
                 boolean isAwg = scheme.equals("awg") || scheme.equals("amnezia");
 
-                String privKey = uri.getUserInfo();
+                String userinfo = m.group(1);
+                String hostport = m.group(2);
+                String query = m.group(3);
+                String fragment = m.group(4);
+
+                Map<String, String> queryMap = parseQueryParams(query);
+
+                String privKey = userinfo;
                 if (privKey == null || privKey.isEmpty()) {
-                    privKey = uri.getQueryParameter("priv");
+                    privKey = queryMap.get("priv");
                 }
                 if (privKey == null || privKey.isEmpty()) {
-                    privKey = uri.getQueryParameter("privatekey");
+                    privKey = queryMap.get("privatekey");
                 }
                 privKey = cleanBase64(privKey);
 
-                String host = uri.getHost();
-                int port = uri.getPort();
-                if (port <= 0) port = 443;
-                String endpoint = host + ":" + port;
-
-                String pubKey = cleanBase64(uri.getQueryParameter("pub"));
-                if (pubKey == null || pubKey.isEmpty()) {
-                    pubKey = cleanBase64(uri.getQueryParameter("publickey"));
+                String endpoint = hostport;
+                if (!endpoint.contains(":")) {
+                    endpoint = endpoint + ":443";
                 }
 
-                String address = uri.getQueryParameter("ip");
+                String pubKey = queryMap.get("pub");
+                if (pubKey == null || pubKey.isEmpty()) {
+                    pubKey = queryMap.get("publickey");
+                }
+                pubKey = cleanBase64(pubKey);
+
+                String address = queryMap.get("ip");
                 if (address == null || address.isEmpty()) {
-                    address = uri.getQueryParameter("address");
+                    address = queryMap.get("address");
                 }
                 if (address == null || address.isEmpty()) {
                     address = "10.104.2.228/32";
                 }
 
-                String dns = uri.getQueryParameter("dns");
-                String psk = cleanBase64(uri.getQueryParameter("psk"));
+                String dns = queryMap.get("dns");
+                String psk = queryMap.get("psk");
                 if (psk == null || psk.isEmpty()) {
-                    psk = cleanBase64(uri.getQueryParameter("presharedkey"));
+                    psk = queryMap.get("presharedkey");
                 }
+                psk = cleanBase64(psk);
 
                 int mtu = 1420;
-                String mtuStr = uri.getQueryParameter("mtu");
+                String mtuStr = queryMap.get("mtu");
                 if (mtuStr != null) {
-                    try { mtu = Integer.parseInt(mtuStr); } catch (Throwable ignored) {}
+                    try { mtu = Integer.parseInt(mtuStr.trim()); } catch (Throwable ignored) {}
                 }
 
                 Map<String, String> awgParams = new HashMap<String, String>();
-                String jc = uri.getQueryParameter("jc");
-                String jmin = uri.getQueryParameter("jmin");
-                String jmax = uri.getQueryParameter("jmax");
-                String s1 = uri.getQueryParameter("s1");
-                String s2 = uri.getQueryParameter("s2");
-                String h1 = uri.getQueryParameter("h1");
-                String h2 = uri.getQueryParameter("h2");
-                String h3 = uri.getQueryParameter("h3");
-                String h4 = uri.getQueryParameter("h4");
+                String jc = queryMap.get("jc");
+                String jmin = queryMap.get("jmin");
+                String jmax = queryMap.get("jmax");
+                String s1 = queryMap.get("s1");
+                String s2 = queryMap.get("s2");
+                String h1 = queryMap.get("h1");
+                String h2 = queryMap.get("h2");
+                String h3 = queryMap.get("h3");
+                String h4 = queryMap.get("h4");
 
                 if (jc != null || h1 != null) {
                     isAwg = true;
@@ -451,13 +517,20 @@ public final class RokbollBridge {
                     awgParams.put("h4", h4 != null ? h4 : "4");
                 }
 
-                String remarks = extractRemarks(text);
+                String remarks = null;
+                if (fragment != null && !fragment.isEmpty()) {
+                    try {
+                        remarks = URLDecoder.decode(fragment, "UTF-8");
+                    } catch (Throwable ignored) {
+                        remarks = fragment;
+                    }
+                }
                 if (remarks == null || remarks.isEmpty()) {
                     remarks = isAwg ? "AmneziaWG-Node" : "WireGuard-Node";
                 }
 
-                if (privKey == null || pubKey == null || host == null) {
-                    Log.e(TAG, "URI missing privKey, pubKey, or host: " + text);
+                if (privKey == null || pubKey == null || endpoint == null) {
+                    Log.e(TAG, "Parsed missing privKey, pubKey, or endpoint: " + text);
                     return false;
                 }
 
@@ -469,7 +542,7 @@ public final class RokbollBridge {
         }
     }
 
-    private static boolean saveWireGuardServer(Context context, String remarks, String privKey, String address,
+    private static boolean saveWireGuardServer(final Context context, String remarks, String privKey, String address,
                                                String pubKey, String endpoint, String presharedKey, int mtu,
                                                String dns, Map<String, String> awgParams) {
         try {
@@ -479,21 +552,23 @@ public final class RokbollBridge {
             int port = Integer.parseInt(endpoint.substring(col + 1).trim());
 
             String peerKey = host + ":" + port;
-            SharedPreferences.Editor edit = getPrefs(context).edit();
-            if (awgParams != null && !awgParams.isEmpty()) {
-                edit.putBoolean("awg_enabled_" + peerKey, true);
-                if (awgParams.containsKey("jc")) edit.putInt("awg_jc_" + peerKey, Integer.parseInt(awgParams.get("jc")));
-                if (awgParams.containsKey("jmin")) edit.putInt("awg_jmin_" + peerKey, Integer.parseInt(awgParams.get("jmin")));
-                if (awgParams.containsKey("jmax")) edit.putInt("awg_jmax_" + peerKey, Integer.parseInt(awgParams.get("jmax")));
-                if (awgParams.containsKey("s1")) edit.putInt("awg_s1_" + peerKey, Integer.parseInt(awgParams.get("s1")));
-                if (awgParams.containsKey("s2")) edit.putInt("awg_s2_" + peerKey, Integer.parseInt(awgParams.get("s2")));
-                if (awgParams.containsKey("h1")) edit.putLong("awg_h1_" + peerKey, Long.parseLong(awgParams.get("h1")));
-                if (awgParams.containsKey("h2")) edit.putLong("awg_h2_" + peerKey, Long.parseLong(awgParams.get("h2")));
-                if (awgParams.containsKey("h3")) edit.putLong("awg_h3_" + peerKey, Long.parseLong(awgParams.get("h3")));
-                if (awgParams.containsKey("h4")) edit.putLong("awg_h4_" + peerKey, Long.parseLong(awgParams.get("h4")));
-                Log.i(TAG, "Saved AWG parameters for " + peerKey);
+            if (context != null) {
+                SharedPreferences.Editor edit = getPrefs(context).edit();
+                if (awgParams != null && !awgParams.isEmpty()) {
+                    edit.putBoolean("awg_enabled_" + peerKey, true);
+                    if (awgParams.containsKey("jc")) edit.putInt("awg_jc_" + peerKey, Integer.parseInt(awgParams.get("jc")));
+                    if (awgParams.containsKey("jmin")) edit.putInt("awg_jmin_" + peerKey, Integer.parseInt(awgParams.get("jmin")));
+                    if (awgParams.containsKey("jmax")) edit.putInt("awg_jmax_" + peerKey, Integer.parseInt(awgParams.get("jmax")));
+                    if (awgParams.containsKey("s1")) edit.putInt("awg_s1_" + peerKey, Integer.parseInt(awgParams.get("s1")));
+                    if (awgParams.containsKey("s2")) edit.putInt("awg_s2_" + peerKey, Integer.parseInt(awgParams.get("s2")));
+                    if (awgParams.containsKey("h1")) edit.putLong("awg_h1_" + peerKey, Long.parseLong(awgParams.get("h1")));
+                    if (awgParams.containsKey("h2")) edit.putLong("awg_h2_" + peerKey, Long.parseLong(awgParams.get("h2")));
+                    if (awgParams.containsKey("h3")) edit.putLong("awg_h3_" + peerKey, Long.parseLong(awgParams.get("h3")));
+                    if (awgParams.containsKey("h4")) edit.putLong("awg_h4_" + peerKey, Long.parseLong(awgParams.get("h4")));
+                    Log.i(TAG, "Saved AWG parameters for " + peerKey);
+                }
+                edit.apply();
             }
-            edit.apply();
 
             StringBuilder sb = new StringBuilder();
             sb.append("wireguard://");
@@ -545,6 +620,25 @@ public final class RokbollBridge {
             Method methodE = nv4Cls.getMethod("e", String.class, serverConfigCls);
             String guid = (String) methodE.invoke(null, "", serverConfig);
             Log.i(TAG, "Successfully saved WireGuard/AWG server, guid=" + guid + " (" + remarks + ")");
+
+            if (context != null) {
+                new Handler(Looper.getMainLooper()).post(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            Method getVM = context.getClass().getMethod("G");
+                            Object vm = getVM.invoke(context);
+                            if (vm != null) {
+                                Method methodW = vm.getClass().getMethod("W", String.class);
+                                methodW.invoke(vm, "");
+                            }
+                        } catch (Throwable t) {
+                            Log.w(TAG, "Could not refresh MainViewModel: " + t.getMessage());
+                        }
+                    }
+                });
+            }
+
             return true;
         } catch (Throwable t) {
             Log.e(TAG, "saveWireGuardServer failed: " + t.getMessage(), t);
@@ -565,7 +659,7 @@ public final class RokbollBridge {
         return null;
     }
 
-    private static boolean saveCustomServer(Context context, String remarks, String rawUri) {
+    private static boolean saveCustomServer(final Context context, String remarks, String rawUri) {
         try {
             Class<?> eConfigTypeCls = Class.forName("su.happ.proxyutility.dto.enums.EConfigType");
             Object socksType = Enum.valueOf((Class<Enum>) eConfigTypeCls, "SOCKS");
@@ -585,10 +679,28 @@ public final class RokbollBridge {
                 setAdv.invoke(cfg, rawUri);
                 String guid = (String) methodE.invoke(null, "", cfg);
 
-                getPrefs(context).edit()
-                        .putString("uri_" + guid, rawUri)
-                        .putString("uri_" + remarks, rawUri)
-                        .apply();
+                if (context != null) {
+                    getPrefs(context).edit()
+                            .putString("uri_" + guid, rawUri)
+                            .putString("uri_" + remarks, rawUri)
+                            .apply();
+
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                Method getVM = context.getClass().getMethod("G");
+                                Object vm = getVM.invoke(context);
+                                if (vm != null) {
+                                    Method methodW = vm.getClass().getMethod("W", String.class);
+                                    methodW.invoke(vm, "");
+                                }
+                            } catch (Throwable t) {
+                                Log.w(TAG, "Could not refresh MainViewModel: " + t.getMessage());
+                            }
+                        }
+                    });
+                }
                 return true;
             }
         } catch (Throwable t) {
