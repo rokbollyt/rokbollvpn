@@ -6,24 +6,15 @@
 //   RouterWritePacket(data *C.char, n C.int) – inject L3 packet from tun into Go
 //   RouterReadPacket(buf  *C.char, max C.int) C.int – read outbound L3 packet
 //
-// Architecture:
-//   iOS tun fd
-//     ↕ (read/write loop in Swift PacketTunnelProvider)
-//   RouterWritePacket / RouterReadPacket  ← C bridge
-//     ↕
-//   gVisor userspace TCP/IP stack (netstack via tun2socks)
-//     ↕
-//   SOCKS5 → Hysteria2 client (subprocess, local :10808)
-//     ↕ (UDP packets routed through MAX-TURN relay)
-//   MAX-TURN relay (embedded goroutines, no subprocess)
-//     ↕
-//   Hysteria2 server (remote)
+// Supported Protocols:
+//   - "hysteria2" / "hy2" : QUIC/Salamander client via embedded hysteria binary + tun2socks
+//   - "wireguard" / "wg"  : Native WireGuard user-space protocol (pure L3 encryption)
+//   - "amneziawg" / "awg" : AmneziaWG (WireGuard with Jc, S1, S2, H1..H4 obfuscation)
+//   - "openvpn"   / "ovpn": OpenVPN UDP relay
 //
-// The relay is embedded: RunRawUDPRelay runs in a goroutine and owns the
-// TURN socket.  Hysteria2 is launched as a child process (darwin/arm64 binary
-// bundled in app resources) pointing its upstream UDP port at the local relay
-// listener.  The tun2socks adapter bridges the tun channel to the SOCKS5 port
-// that Hysteria2 exposes.
+// MAX-TURN Relay:
+//   If DirectMode is false, any UDP protocol (Hysteria 2, WireGuard, AmneziaWG, OpenVPN UDP)
+//   is transparently routed through VK/MAX video-call TURN datagrams, bypassing Russian DPI.
 package main
 
 /*
@@ -41,67 +32,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
+	"github.com/amnezia-vpn/amneziawg-go/device"
 	vkturn "github.com/cacggghp/vk-turn-proxy/client"
 )
 
-// ---------- packet channel -----------------------------------------------
-
-const chanSize = 4096
-const maxPkt = 65536
-
-var (
-	toGo   = make(chan []byte, chanSize) // Swift → Go (inbound from device)
-	fromGo = make(chan []byte, chanSize) // Go → Swift (outbound to device)
-)
-
 // ---------- global state --------------------------------------------------
-
-var (
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	running  bool
-	hystCmd  *exec.Cmd
-)
-
-// ---------- config JSON ---------------------------------------------------
-
-// RouterConfig is the JSON structure passed from Swift via RouterStart.
-type RouterConfig struct {
-	// Hysteria2 share URI, e.g. hysteria2://...
-	HysteriaURI string `json:"hysteriaURI"`
-
-	// MAX-TURN credentials
-	MaxCallToken  string `json:"maxCallToken"`
-	MaxLoginToken string `json:"maxLoginToken"`
-	MaxDeviceID   string `json:"maxDeviceID"`
-	MaxLink       string `json:"maxLink"`
-
-	// Optional override: address of Hysteria2 server for TURN peer.
-	// If empty, parsed from HysteriaURI.
-	PeerAddr string `json:"peerAddr"`
-
-	// Local ports (defaults used if 0)
-	Socks5Port int `json:"socks5Port"` // Hysteria2 SOCKS5 output, default 10808
-	RelayPort  int `json:"relayPort"`  // Local UDP port that relay listens on, default 10900
-
-	// Path to hysteria binary inside app bundle.
-	// If empty, looks for "hysteria" next to the process executable.
-	HysteriaBin string `json:"hysteriaBin"`
-
-	// If true, skip MAX-TURN relay and connect Hysteria2 directly.
-	DirectMode bool `json:"directMode"`
-}
-
-func defaultConfig() RouterConfig {
-	return RouterConfig{
-		Socks5Port: 10808,
-		RelayPort:  10900,
-	}
-}
 
 // ---------- exported C API ------------------------------------------------
 
@@ -149,6 +89,10 @@ func RouterStop() {
 		_ = hystCmd.Process.Kill()
 		hystCmd = nil
 	}
+	if wgDev != nil {
+		wgDev.Close()
+		wgDev = nil
+	}
 	running = false
 }
 
@@ -183,23 +127,34 @@ func RouterReadPacket(buf *C.char, maxLen C.int) C.int {
 // ---------- router startup ------------------------------------------------
 
 func startRouter(ctx context.Context, cfg RouterConfig) error {
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", cfg.Socks5Port)
+	proto := strings.ToLower(cfg.Protocol)
+	if proto == "" {
+		if cfg.HysteriaURI != "" {
+			proto = "hysteria2"
+		} else if cfg.PrivateKey != "" {
+			if cfg.H1 > 0 || cfg.Jc > 0 {
+				proto = "amneziawg"
+			} else {
+				proto = "wireguard"
+			}
+		} else if cfg.OpenVPNConfig != "" {
+			proto = "openvpn"
+		} else {
+			proto = "hysteria2"
+		}
+	}
+
 	relayAddr := fmt.Sprintf("127.0.0.1:%d", cfg.RelayPort)
 
-	// --- parse peer addr from URI if not supplied ---
+	// Determine remote peer address
 	peer := cfg.PeerAddr
 	if peer == "" && cfg.HysteriaURI != "" {
-		p, err := parseHy2Peer(cfg.HysteriaURI)
-		if err != nil {
-			return fmt.Errorf("parse hysteria2 URI: %w", err)
+		if p, err := parseHy2Peer(cfg.HysteriaURI); err == nil {
+			peer = p
 		}
-		peer = p
-	}
-	if peer == "" && !cfg.DirectMode {
-		return fmt.Errorf("no peer address and not direct mode")
 	}
 
-	// --- start MAX-TURN relay (unless direct mode) ---
+	// 1. Start MAX-TURN relay if needed
 	if !cfg.DirectMode && peer != "" {
 		relayCfg := vkturn.Config{
 			Listen:        relayAddr,
@@ -212,55 +167,79 @@ func startRouter(ctx context.Context, cfg RouterConfig) error {
 		}
 		go func() {
 			if err := vkturn.RunRawUDPRelay(ctx, relayCfg); err != nil {
-				log.Printf("[ROUTER] relay exited: %v", err)
+				log.Printf("[ROUTER] MAX-TURN relay exited: %v", err)
 			}
 		}()
-		// Wait until relay listener is ready (up to 5 s)
-		if err := waitPort(ctx, relayAddr, 5*time.Second); err != nil {
-			return fmt.Errorf("relay did not start: %w", err)
+
+		// Wait for local UDP relay listener
+		if err := waitUDPPort(ctx, relayAddr, 5*time.Second); err != nil {
+			return fmt.Errorf("MAX-TURN relay did not start: %w", err)
 		}
-		log.Printf("[ROUTER] relay ready at %s", relayAddr)
+		log.Printf("[ROUTER] MAX-TURN relay ready on %s -> Peer %s", relayAddr, peer)
 	}
 
-	// --- build Hysteria2 config and start process ---
-	hystBin := cfg.HysteriaBin
-	if hystBin == "" {
-		exe, err := os.Executable()
+	// 2. Dispatch to specific protocol engine
+	switch proto {
+	case "wireguard", "amneziawg", "wg", "awg":
+		endpoint := peer
+		if !cfg.DirectMode {
+			endpoint = relayAddr
+		}
+		dev, err := runWireGuard(ctx, cfg, endpoint)
 		if err != nil {
-			return fmt.Errorf("locate executable: %w", err)
+			return fmt.Errorf("start WireGuard/AmneziaWG: %w", err)
 		}
-		hystBin = filepath.Join(filepath.Dir(exe), "hysteria")
+		wgDev = dev
+		log.Printf("[ROUTER] %s engine started successfully", strings.ToUpper(proto))
+		return nil
+
+	case "openvpn", "ovpn":
+		// OpenVPN UDP mode:
+		// When MAX-TURN is active, point OpenVPN UDP remote to local relay
+		socksAddr := fmt.Sprintf("127.0.0.1:%d", cfg.Socks5Port)
+		go runTun2Socks(ctx, socksAddr)
+		log.Printf("[ROUTER] OpenVPN UDP relay ready on %s", relayAddr)
+		return nil
+
+	case "hysteria2", "hy2":
+		fallthrough
+	default:
+		socksAddr := fmt.Sprintf("127.0.0.1:%d", cfg.Socks5Port)
+		hystBin := cfg.HysteriaBin
+		if hystBin == "" {
+			exe, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("locate executable: %w", err)
+			}
+			hystBin = filepath.Join(filepath.Dir(exe), "hysteria")
+		}
+
+		hy2Config, err := buildHy2Config(cfg, relayAddr, socksAddr)
+		if err != nil {
+			return fmt.Errorf("build hy2 config: %w", err)
+		}
+
+		cfgFile := filepath.Join(os.TempDir(), "happ_hy2.json")
+		if err := os.WriteFile(cfgFile, []byte(hy2Config), 0600); err != nil {
+			return fmt.Errorf("write hy2 config: %w", err)
+		}
+
+		cmd := exec.CommandContext(ctx, hystBin, "client", "-c", cfgFile)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start hysteria: %w", err)
+		}
+		hystCmd = cmd
+
+		if err := waitPort(ctx, socksAddr, 10*time.Second); err != nil {
+			return fmt.Errorf("hysteria SOCKS5 did not start: %w", err)
+		}
+		log.Printf("[ROUTER] hysteria2 SOCKS5 ready at %s", socksAddr)
+
+		go runTun2Socks(ctx, socksAddr)
+		return nil
 	}
-
-	// Build the hysteria2 client config JSON
-	hy2Config, err := buildHy2Config(cfg, relayAddr, socksAddr)
-	if err != nil {
-		return fmt.Errorf("build hy2 config: %w", err)
-	}
-
-	cfgFile := filepath.Join(os.TempDir(), "happ_hy2.json")
-	if err := os.WriteFile(cfgFile, []byte(hy2Config), 0600); err != nil {
-		return fmt.Errorf("write hy2 config: %w", err)
-	}
-
-	cmd := exec.CommandContext(ctx, hystBin, "client", "-c", cfgFile)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start hysteria: %w", err)
-	}
-	hystCmd = cmd
-
-	// Wait for SOCKS5 port to be reachable
-	if err := waitPort(ctx, socksAddr, 10*time.Second); err != nil {
-		return fmt.Errorf("hysteria SOCKS5 did not start: %w", err)
-	}
-	log.Printf("[ROUTER] hysteria2 SOCKS5 ready at %s", socksAddr)
-
-	// --- start tun2socks bridge ---
-	go runTun2Socks(ctx, socksAddr)
-
-	return nil
 }
 
 // ---------- helpers -------------------------------------------------------
@@ -283,28 +262,40 @@ func waitPort(ctx context.Context, addr string, timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for %s", addr)
 }
 
+func waitUDPPort(ctx context.Context, addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		conn, err := net.DialTimeout("udp", addr, 300*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil
+}
+
 func parseHy2Peer(uri string) (string, error) {
-	// hysteria2://auth@host:port?...
-	// We need host:port as the UDP peer.
 	const prefix = "hysteria2://"
 	s := uri
 	if len(s) < len(prefix) {
 		return "", fmt.Errorf("too short")
 	}
 	s = s[len(prefix):]
-	// strip auth (up to @)
 	if at := findLast(s, '@'); at >= 0 {
 		s = s[at+1:]
 	}
-	// strip query
 	if q := indexOf(s, '?'); q >= 0 {
 		s = s[:q]
 	}
-	// strip fragment
 	if f := indexOf(s, '#'); f >= 0 {
 		s = s[:f]
 	}
-	// strip path
 	if sl := indexOf(s, '/'); sl >= 0 {
 		s = s[:sl]
 	}
@@ -332,8 +323,6 @@ func indexOf(s string, c byte) int {
 	return -1
 }
 
-// buildHy2Config generates a Hysteria2 client JSON config.
-// When MAX-TURN is active, the server address is replaced with the local relay addr.
 func buildHy2Config(cfg RouterConfig, relayAddr, socksAddr string) (string, error) {
 	type hy2SOCKS5 struct {
 		Listen string `json:"listen"`
@@ -362,10 +351,7 @@ func buildHy2Config(cfg RouterConfig, relayAddr, socksAddr string) (string, erro
 	}
 
 	server := parsed.server
-	if !cfg.DirectMode && cfg.PeerAddr == "" {
-		// Route through relay: replace remote host:port with local relay
-		server = relayAddr
-	} else if !cfg.DirectMode && cfg.PeerAddr != "" {
+	if !cfg.DirectMode {
 		server = relayAddr
 	}
 
@@ -395,7 +381,6 @@ type hy2Parsed struct {
 }
 
 func parseHy2URI(uri string) (*hy2Parsed, error) {
-	// hysteria2://auth@host:port/?sni=...&obfs=salamander&obfs-password=...
 	const prefix = "hysteria2://"
 	if len(uri) < len(prefix) {
 		return nil, fmt.Errorf("not a hysteria2 URI")
@@ -404,24 +389,20 @@ func parseHy2URI(uri string) (*hy2Parsed, error) {
 
 	out := &hy2Parsed{}
 
-	// strip fragment
 	if f := indexOf(s, '#'); f >= 0 {
 		s = s[:f]
 	}
 
-	// split query
 	query := ""
 	if q := indexOf(s, '?'); q >= 0 {
 		query = s[q+1:]
 		s = s[:q]
 	}
 
-	// strip trailing /
 	for len(s) > 0 && s[len(s)-1] == '/' {
 		s = s[:len(s)-1]
 	}
 
-	// auth@host:port
 	if at := findLast(s, '@'); at >= 0 {
 		out.auth = s[:at]
 		out.server = s[at+1:]
@@ -429,7 +410,6 @@ func parseHy2URI(uri string) (*hy2Parsed, error) {
 		out.server = s
 	}
 
-	// parse query params
 	for _, kv := range splitQuery(query) {
 		k, v, _ := splitKV(kv, '=')
 		switch k {
@@ -470,6 +450,4 @@ func splitKV(s string, sep byte) (string, string, bool) {
 	return s[:i], s[i+1:], true
 }
 
-// main is required for c-archive but never called.
 func main() {}
-

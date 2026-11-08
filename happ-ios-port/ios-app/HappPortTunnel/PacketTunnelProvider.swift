@@ -32,14 +32,31 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let conf = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
         let configJSON = (conf["configJSON"] as? String) ?? "{}"
 
+        var clientIP = "10.254.1.2"
+        var dnsServer = "1.1.1.1"
+        var tunnelMTU = 1420
+
+        if let data = configJSON.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let ip = json["clientIP"] as? String, !ip.isEmpty {
+                clientIP = ip.components(separatedBy: "/").first ?? ip
+            }
+            if let d = json["dns"] as? String, !d.isEmpty {
+                dnsServer = d.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? d
+            }
+            if let m = json["mtu"] as? Int, m > 0 {
+                tunnelMTU = m
+            }
+        }
+
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
-        let ipv4 = NEIPv4Settings(addresses: ["10.254.1.2"], subnetMasks: ["255.255.255.0"])
+        let ipv4 = NEIPv4Settings(addresses: [clientIP], subnetMasks: ["255.255.255.0"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
         ipv4.excludedRoutes = Self.bypassRoutes
         settings.ipv4Settings = ipv4
-        settings.mtu = 1500
+        settings.mtu = NSNumber(value: tunnelMTU)
 
-        let dns = NEDNSSettings(servers: ["198.18.0.1"])
+        let dns = NEDNSSettings(servers: [dnsServer])
         dns.matchDomains = [""]
         settings.dnsSettings = dns
 

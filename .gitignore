@@ -7,3 +7,5 @@
 **/old/ 
 "node_modules/"  
 "**/node_modules/" 
+happ-ios-port/bin/
+*.ipa
