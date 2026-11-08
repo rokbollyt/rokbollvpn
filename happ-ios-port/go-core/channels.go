@@ -7,3 +7,4 @@ var (
 	toGo   = make(chan []byte, chanSize) // Swift -> Go (inbound from device)
 	fromGo = make(chan []byte, chanSize) // Go -> Swift (outbound to device)
 )
+

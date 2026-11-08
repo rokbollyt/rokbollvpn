@@ -58,3 +58,4 @@ func defaultConfig() RouterConfig {
 		MTU:        1420,
 	}
 }
+

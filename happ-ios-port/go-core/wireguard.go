@@ -247,3 +247,4 @@ func hexOrBase64Decode(s string, out []byte) (int, error) {
 	}
 	return outIdx, nil
 }
+
