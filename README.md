@@ -60,15 +60,15 @@
 ### 1. AmneziaWG / WireGuard URI (однострочный)
 
 ```text
-awg://AEPEXfE6SDILkSjqwhHepo408/zHKVJ1e5LQcM3+aWY=@5.196.64.200:443?ip=10.104.2.228&pub=iM12hkxD6YzouHTa6MFFYuFtocV+1WPXjBNkbXEPMjU=&dns=1.1.1.1&jc=4&jmin=40&jmax=70&s1=0&s2=0&h1=1&h2=2&h3=3&h4=4#AmneziaWG-Node
+awg://<CLIENT_PRIVATE_KEY>@<SERVER_IP>:<PORT>?ip=10.0.0.2/32&pub=<SERVER_PUBLIC_KEY>&dns=1.1.1.1&jc=4&jmin=40&jmax=70&s1=0&s2=0&h1=1&h2=2&h3=3&h4=4#AmneziaWG-Node
 ```
 
 ### 2. Сырой INI-конфиг WireGuard / AmneziaWG
 
 ```ini
 [Interface]
-PrivateKey = AEPEXfE6SDILkSjqwhHepo408/zHKVJ1e5LQcM3+aWY=
-Address = 10.104.2.228/32
+PrivateKey = <CLIENT_PRIVATE_KEY>
+Address = 10.0.0.2/32
 DNS = 1.1.1.1, 8.8.8.8
 Jc = 4
 Jmin = 40
@@ -81,17 +81,17 @@ H3 = 3
 H4 = 4
 
 [Peer]
-PublicKey = iM12hkxD6YzouHTa6MFFYuFtocV+1WPXjBNkbXEPMjU=
-Endpoint = 5.196.64.200:443
+PublicKey = <SERVER_PUBLIC_KEY>
+Endpoint = <SERVER_IP>:<PORT>
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ```
 
 ### 3. Кастомные URI протоколов
 
-- **Minewire**: `minewire://password@host:port?mode=fast#ServerName`
-- **MAX-TURN**: `max-turn://host:port?link=...&streams=4#MAX-Node`
-- **VK-TURN**: `vk-turn://host:port?link=...#VK-Node`
+- **Minewire**: `minewire://password@<SERVER_IP>:<PORT>?mode=fast#ServerName`
+- **MAX-TURN**: `max-turn://<SERVER_IP>:<PORT>?link=<CALL_LINK>&streams=4#MAX-Node`
+- **VK-TURN**: `vk-turn://<SERVER_IP>:<PORT>?link=<CALL_LINK>#VK-Node`
 
 ---
 
