@@ -277,17 +277,21 @@ public final class RokbollBridge {
             return false;
         }
 
+        final Context appCtx = getAppContext(context);
         String trimmed = rawText.trim();
+        String lowerTrimmed = trimmed.toLowerCase();
         int importedCount = 0;
         String lastRemarks = null;
 
+        Log.i(TAG, "handleImportUri received text length=" + trimmed.length());
+
         // Check if raw text is multi-line INI config ([Interface] + [Peer])
-        if (trimmed.contains("[Interface]") && trimmed.contains("[Peer]")) {
+        if (lowerTrimmed.contains("[interface]") && lowerTrimmed.contains("[peer]")) {
             try {
-                boolean ok = parseAndSaveWireGuard(context, trimmed, true);
+                boolean ok = parseAndSaveWireGuard(appCtx, trimmed, true);
                 if (ok) {
                     importedCount++;
-                    boolean isAwg = trimmed.contains("Jc") || trimmed.contains("jc") || trimmed.contains("H1") || trimmed.contains("h1");
+                    boolean isAwg = lowerTrimmed.contains("jc") || lowerTrimmed.contains("h1");
                     lastRemarks = isAwg ? "AmneziaWG-Node" : "WireGuard-Node";
                 }
             } catch (Throwable t) {
@@ -301,7 +305,7 @@ public final class RokbollBridge {
                 String lower = uriStr.toLowerCase();
                 if (lower.startsWith("awg://") || lower.startsWith("amnezia://") || lower.startsWith("wg://") || lower.startsWith("wireguard://")) {
                     try {
-                        boolean ok = parseAndSaveWireGuard(context, uriStr, false);
+                        boolean ok = parseAndSaveWireGuard(appCtx, uriStr, false);
                         if (ok) {
                             importedCount++;
                             String rem = extractRemarks(uriStr);
@@ -319,7 +323,7 @@ public final class RokbollBridge {
                             else remarks = "VK-TURN";
                         }
 
-                        boolean ok = saveCustomServer(context, remarks, uriStr);
+                        boolean ok = saveCustomServer(appCtx, remarks, uriStr);
                         if (ok) {
                             importedCount++;
                             lastRemarks = remarks;
@@ -332,13 +336,14 @@ public final class RokbollBridge {
         }
 
         if (importedCount > 0) {
+            Log.i(TAG, "handleImportUri successfully imported " + importedCount + " servers! last=" + lastRemarks);
             final String msg = importedCount == 1 ? ("Сервер " + lastRemarks + " добавлен!") : ("Импортировано серверов: " + importedCount);
-            if (context != null) {
+            if (appCtx != null) {
                 new Handler(Looper.getMainLooper()).post(new Runnable() {
                     @Override
                     public void run() {
                         try {
-                            Toast.makeText(context.getApplicationContext(), msg, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(appCtx, msg, Toast.LENGTH_SHORT).show();
                         } catch (Throwable ignored) {}
                     }
                 });
@@ -346,6 +351,7 @@ public final class RokbollBridge {
             return true;
         }
 
+        Log.d(TAG, "handleImportUri not recognized as custom format, passing to Happ default parser");
         return false;
     }
 
@@ -542,6 +548,20 @@ public final class RokbollBridge {
         }
     }
 
+    public static Class<?> findClass(String name) throws ClassNotFoundException {
+        try {
+            return Class.forName(name);
+        } catch (ClassNotFoundException e) {
+            if (name.startsWith("defpackage.")) {
+                return Class.forName(name.substring("defpackage.".length()));
+            }
+            try {
+                return Class.forName("defpackage." + name);
+            } catch (ClassNotFoundException ignored) {}
+            throw e;
+        }
+    }
+
     private static boolean saveWireGuardServer(final Context context, String remarks, String privKey, String address,
                                                String pubKey, String endpoint, String presharedKey, int mtu,
                                                String dns, Map<String, String> awgParams) {
@@ -570,56 +590,75 @@ public final class RokbollBridge {
                 edit.apply();
             }
 
-            StringBuilder sb = new StringBuilder();
-            sb.append("wireguard://");
-            sb.append(URLEncoder.encode(privKey, "UTF-8"));
-            sb.append("@");
-            sb.append(host);
-            sb.append(":");
-            sb.append(port);
-            sb.append("?publickey=").append(URLEncoder.encode(pubKey, "UTF-8"));
-
             String finalAddress = address != null ? address.trim() : "10.104.2.228/32";
             if (!finalAddress.contains("/")) {
                 finalAddress = finalAddress + "/32";
             }
-            sb.append("&address=").append(URLEncoder.encode(finalAddress, "UTF-8"));
-            sb.append("&reserved=0,0,0");
 
-            if (presharedKey != null && !presharedKey.isEmpty()) {
-                sb.append("&presharedkey=").append(URLEncoder.encode(presharedKey, "UTF-8"));
-            }
-            if (mtu > 0) {
-                sb.append("&mtu=").append(mtu);
-            }
-            if (remarks != null && !remarks.isEmpty()) {
-                sb.append("#").append(URLEncoder.encode(remarks, "UTF-8"));
-            }
+            // Create WireGuard ServerConfig directly
+            Class<?> eConfigTypeCls = findClass("su.happ.proxyutility.dto.enums.EConfigType");
+            Object wgType = Enum.valueOf((Class<Enum>) eConfigTypeCls, "WIREGUARD");
 
-            String wgUri = sb.toString();
-            Log.i(TAG, "Generated canonical WireGuard URI for internal parser: " + wgUri);
-
-            Class<?> s37Cls = Class.forName("defpackage.s37");
-            Object s37 = s37Cls.newInstance();
-            Method mB = s37Cls.getMethod("b", String.class);
-            Object m83Obj = mB.invoke(s37, wgUri);
-            if (m83Obj == null) {
-                Log.e(TAG, "s37.b returned null for " + wgUri);
-                return false;
-            }
-
-            Field fA = m83Obj.getClass().getField("a");
-            Object serverConfig = fA.get(m83Obj);
+            Class<?> companionCls = findClass("su.happ.proxyutility.dto.ServerConfig$Companion");
+            Method methodA = companionCls.getMethod("a", eConfigTypeCls);
+            Object serverConfig = methodA.invoke(null, wgType);
             if (serverConfig == null) {
-                Log.e(TAG, "m83.a is null");
+                Log.e(TAG, "ServerConfig.Companion.a returned null for WIREGUARD");
                 return false;
             }
 
-            Class<?> serverConfigCls = Class.forName("su.happ.proxyutility.dto.ServerConfig");
-            Class<?> nv4Cls = Class.forName("defpackage.nv4");
-            Method methodE = nv4Cls.getMethod("e", String.class, serverConfigCls);
+            // Set remarks
+            Method setRemarks = serverConfig.getClass().getMethod("m", String.class);
+            setRemarks.invoke(serverConfig, remarks);
+
+            // Configure outbound
+            Method getOutbound = serverConfig.getClass().getMethod("f");
+            Object outbound = getOutbound.invoke(serverConfig);
+            if (outbound != null) {
+                Method getOutSettings = outbound.getClass().getMethod("i");
+                Object outSettings = getOutSettings.invoke(outbound);
+                if (outSettings != null) {
+                    // Set secretKey (privateKey)
+                    Method setSecretKey = outSettings.getClass().getMethod("u", String.class);
+                    setSecretKey.invoke(outSettings, privKey);
+
+                    // Set address list
+                    Method setAddress = outSettings.getClass().getMethod("m", Object.class);
+                    setAddress.invoke(outSettings, Arrays.asList(finalAddress));
+
+                    // Set peers
+                    Method getPeers = outSettings.getClass().getMethod("f");
+                    List<?> peers = (List<?>) getPeers.invoke(outSettings);
+                    if (peers != null && !peers.isEmpty()) {
+                        Object peer = peers.get(0);
+                        Method setPubKey = peer.getClass().getMethod("f", String.class);
+                        setPubKey.invoke(peer, pubKey);
+
+                        if (presharedKey != null && !presharedKey.isEmpty()) {
+                            Method setPsk = peer.getClass().getMethod("e", String.class);
+                            setPsk.invoke(peer, presharedKey);
+                        }
+
+                        Method setEndpoint = peer.getClass().getMethod("d", String.class);
+                        setEndpoint.invoke(peer, host + ":" + port);
+                    }
+
+                    // Set MTU
+                    Method setMtu = outSettings.getClass().getMethod("r", Integer.class);
+                    setMtu.invoke(outSettings, Integer.valueOf(mtu > 0 ? mtu : 1420));
+
+                    // Set Reserved [0, 0, 0]
+                    List<Integer> reserved = Arrays.asList(0, 0, 0);
+                    Method setReserved = outSettings.getClass().getMethod("t", List.class);
+                    setReserved.invoke(outSettings, reserved);
+                }
+            }
+
+            // Persist to DB
+            Class<?> nv4Cls = findClass("nv4");
+            Method methodE = nv4Cls.getMethod("e", String.class, serverConfig.getClass());
             String guid = (String) methodE.invoke(null, "", serverConfig);
-            Log.i(TAG, "Successfully saved WireGuard/AWG server, guid=" + guid + " (" + remarks + ")");
+            Log.i(TAG, "Successfully created and saved WireGuard/AWG server, guid=" + guid + " (" + remarks + ")");
 
             if (context != null) {
                 new Handler(Looper.getMainLooper()).post(new Runnable() {
@@ -661,14 +700,14 @@ public final class RokbollBridge {
 
     private static boolean saveCustomServer(final Context context, String remarks, String rawUri) {
         try {
-            Class<?> eConfigTypeCls = Class.forName("su.happ.proxyutility.dto.enums.EConfigType");
+            Class<?> eConfigTypeCls = findClass("su.happ.proxyutility.dto.enums.EConfigType");
             Object socksType = Enum.valueOf((Class<Enum>) eConfigTypeCls, "SOCKS");
 
-            Class<?> serverConfigCls = Class.forName("su.happ.proxyutility.dto.ServerConfig");
-            Class<?> companionCls = Class.forName("su.happ.proxyutility.dto.ServerConfig$Companion");
+            Class<?> serverConfigCls = findClass("su.happ.proxyutility.dto.ServerConfig");
+            Class<?> companionCls = findClass("su.happ.proxyutility.dto.ServerConfig$Companion");
             Method methodA = companionCls.getMethod("a", eConfigTypeCls);
 
-            Class<?> nv4Cls = Class.forName("defpackage.nv4");
+            Class<?> nv4Cls = findClass("nv4");
             Method methodE = nv4Cls.getMethod("e", String.class, serverConfigCls);
             Method setRemarks = serverConfigCls.getMethod("m", String.class);
             Method setAdv = serverConfigCls.getMethod("j", String.class);
